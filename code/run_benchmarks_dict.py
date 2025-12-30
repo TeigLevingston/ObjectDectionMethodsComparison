@@ -165,32 +165,7 @@ def threaded_frame_iterator(cap, max_queue: int = 4, include_index: bool = False
 # In-memory detection store: { out_dir: { frame_base: [yolo lines] } }
 _DET_STORE: Dict[str, Dict[str, List[str]]] = {}
 _DET_COUNT: Dict[str, int] = {}
-"""
-def pascal_voc_to_yolo(x1, y1, x2, y2, image_w, image_h):
-    return [((x2 + x1)/(2*image_w)), ((y2 + y1)/(2*image_h)), (x2 - x1)/image_w, (y2 - y1)/image_h]
 
-def write_yolo_txt(path: str, lines: List[str]):
-    Store YOLO detections in memory instead of writing files.
-
-    Keeps signature unchanged for drop-in use. The path is parsed to
-    derive the output directory and frame base name, which are used
-    as keys into the in-memory store.
-
-    out_dir = os.path.dirname(path)
-    base = os.path.splitext(os.path.basename(path))[0]
-    store = _DET_STORE.setdefault(out_dir, {})
-    store[base] = list(lines)
-    _DET_COUNT[out_dir] = _DET_COUNT.get(out_dir, 0) + 1
-
-
-def calculate_euclidean_distance(x1, y1, x2, y2):
-    
-
-    distance = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
-    return distance
-"""
-# ---------------  Inference crop preparation preserving aspect ratio --------------------
-# Using prepare_inference_crop from infer_utils
 
 # -------------------------- Hailo monitor Setup --------------------------
 
@@ -628,7 +603,6 @@ def main() -> int:
 
     return 0
 
-# Using remap_bbox_from_detection_space from infer_utils
 
 if __name__ == "__main__":
     try:
