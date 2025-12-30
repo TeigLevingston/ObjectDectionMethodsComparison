@@ -1,0 +1,543 @@
+"""
+Example external script
+
+Initializes the engine and calls the refactored infer methods, then writes
+CSV rows to a sweep-specific file.
+The parameters for the tests are set in the _sweep_values function. This script updates the parameters file and calls the run benchmarks file that is imported.
+
+This script demonstrates how to use `inference_methods.py` without modifying
+the original benchmark files.
+"""
+import os
+import csv
+import time
+from datetime import datetime, timezone
+from typing import List, Dict, Any, Tuple
+
+from AI_Engine import initialize
+#------------Uncomment to save files or not ------------
+#Saves YOLO.txt Files
+import Run_Benchmarks as RB
+
+#Does not save YOLO.txt Files
+#import Run_Benchmarks_Dict as RB
+
+#-----------------------------------------------------------------------
+import itertools
+import json
+
+def _sweep_values() -> Dict[str, List[Any]]:
+    # Mirror Parameter_Test_Harness choices all are quoted strings
+    return {
+        "CONFIDENCE_THRESHOLD": ["0.20",".40" ],   # .40, .60 All
+        "TILE_STRIDE": [ "320"],                             # Tiles
+        "DUP_MIN_DISTANCE": ["300","500"],      # Motion, Mog2, Tiles
+        "MOTION_MIN_CONTOUR_AREA": ["200","400"],   # Motion, Mog2
+        "MOTION_DIFF_THRESHOLD": ["100","50"],        # Motion, Mog2
+        "GAUSSIAN_BLUR_KERNEL": ["9","17"],                      # Motion  (odd)
+        "MOG2_KERNEL_SIZE": ["13","21"],                        # MOG2 (odd)
+        "MOG2_HISTORY": ["10"],    # Mog2
+        "MOG2_VAR_THRESHOLD": ["5000"], # Mog2
+    }
+
+
+
+def _load_env_params(env_path: str) -> dict:
+    params = {}
+    try:
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                s = line.strip()
+                if not s or s.startswith("#") or "=" not in s:
+                    continue
+                k, v = s.split("=", 1)
+                params[k.strip()] = v.strip()
+    except Exception:
+        pass
+    return params
+
+def _collect_constants_for_csv(env: dict) -> Dict[str, Any]:
+    return {
+        "MODEL_PATH": env.get("MODEL_PATH", env.get("HEF_PATH", "")),
+        "INPUT_SRC": env.get("INPUT_SRC", ""),
+        "GT_FOLDER": env.get("GT_FOLDER", ""),
+        "OUTPUT_ROOT": env.get("OUTPUT_ROOT", ""),
+        "CONFIDENCE_THRESHOLD": env.get("CONFIDENCE_THRESHOLD", ""),
+        "TILE_STRIDE": env.get("TILE_STRIDE", ""),
+        "DUP_MIN_DISTANCE": env.get("DUP_MIN_DISTANCE", ""),
+        "MOTION_MIN_CONTOUR_AREA": env.get("MOTION_MIN_CONTOUR_AREA", ""),
+        "MOTION_DIFF_THRESHOLD": env.get("MOTION_DIFF_THRESHOLD", ""),
+        "GAUSSIAN_BLUR_KERNEL": env.get("GAUSSIAN_BLUR_KERNEL", ""),
+        "MOG2_KERNEL_SIZE": env.get("MOG2_KERNEL_SIZE", ""),
+        "MOG2_HISTORY": env.get("MOG2_HISTORY", ""),
+        "MOG2_VAR_THRESHOLD": env.get("MOG2_VAR_THRESHOLD", ""),
+    }
+
+def _append_metrics_csv(csv_path: str, constants: Dict[str, Any], entries: List[Dict[str, Any]], timestamp: str, run_number: int) -> None:
+    os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
+    const_cols = [
+        "MODEL_PATH","INPUT_SRC","GT_FOLDER","OUTPUT_ROOT",
+        "CONFIDENCE_THRESHOLD","TILE_STRIDE","DUP_MIN_DISTANCE",
+        "MOTION_MIN_CONTOUR_AREA","MOTION_DIFF_THRESHOLD",
+        "GAUSSIAN_BLUR_KERNEL","MOG2_KERNEL_SIZE","MOG2_HISTORY","MOG2_VAR_THRESHOLD",
+    ]
+    run_cols = ["method","files_counted","tp","fp","fn","precision","recall","f1","proc_fps"]
+    extra_cols = []
+    if any("utilization" in e for e in entries):
+        extra_cols.append("utilization")
+    if any("hailo_fps" in e for e in entries):
+        extra_cols.append("hailo_fps")
+    header = ["timestamp", "Run"] + const_cols + run_cols + extra_cols
+
+    write_header = not os.path.isfile(csv_path) or os.path.getsize(csv_path) == 0
+    with open(csv_path, "a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=header)
+        if write_header:
+            w.writeheader()
+        for e in entries:
+            row = {"timestamp": timestamp}
+            row["Run"] = run_number
+            row.update({k: constants.get(k, "") for k in const_cols})
+            row.update({
+                "method": e.get("method",""),
+                "files_counted": e.get("files_counted", 0),
+                "tp": e.get("tp", 0),
+                "fp": e.get("fp", 0),
+                "fn": e.get("fn", 0),
+                "precision": f'{e.get("precision", 0.0):.6f}',
+                "recall": f'{e.get("recall", 0.0):.6f}',
+                "f1": f'{e.get("f1", 0.0):.6f}',
+                "proc_fps": f'{e.get("proc_fps", 0.0):.6f}',
+            })
+            for col in extra_cols:
+                val = e.get(col, "")
+                row[col] = f"{val:.6f}" if isinstance(val, (int, float)) else val
+            w.writerow(row)
+
+def _write_env(params: Dict[str, Any], env_path: str, exclude_keys: List[str] | None = None) -> None:
+    lines = ["# Auto-generated by run_inference_suite sweep\n"]
+    exclude = set(exclude_keys or [])
+    for k, v in params.items():
+        if k in exclude:
+            continue
+        lines.append(f"{k}={v}\n")
+    try:
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+    except Exception:
+        pass
+
+
+
+def _method_param_map() -> Dict[str, List[str]]:
+    # Define which params affect which methods
+    return {
+        "full": ["CONFIDENCE_THRESHOLD"],
+        "full_pad": ["CONFIDENCE_THRESHOLD"],
+        "tiled": ["CONFIDENCE_THRESHOLD", "TILE_STRIDE", "DUP_MIN_DISTANCE"],
+        "motion": ["CONFIDENCE_THRESHOLD","DUP_MIN_DISTANCE", "MOTION_MIN_CONTOUR_AREA", "MOTION_DIFF_THRESHOLD", "GAUSSIAN_BLUR_KERNEL"],
+        "mog2": ["CONFIDENCE_THRESHOLD","DUP_MIN_DISTANCE", "MOTION_MIN_CONTOUR_AREA", "MOTION_DIFF_THRESHOLD", "MOG2_KERNEL_SIZE", "MOG2_HISTORY", "MOG2_VAR_THRESHOLD"],
+    }
+
+
+def _apply_params_to_RB(params: Dict[str, Any]) -> None:
+    """Propagate sweep parameters to the RB module globals so runs use current values.
+    RB reads parameters.env at import time, so we update its module-level constants here.
+    """
+    def _to_float(k, default):
+        try:
+            return float(params.get(k, default))
+        except Exception:
+            return default
+
+    def _to_int(k, default):
+        try:
+            return int(float(params.get(k, default)))
+        except Exception:
+            return default
+
+    if hasattr(RB, "CONFIDENCE_THRESHOLD"):
+        RB.CONFIDENCE_THRESHOLD = _to_float("CONFIDENCE_THRESHOLD", getattr(RB, "CONFIDENCE_THRESHOLD", 0.4))
+    if hasattr(RB, "TILE_STRIDE"):
+        RB.TILE_STRIDE = _to_int("TILE_STRIDE", getattr(RB, "TILE_STRIDE", 320))
+    if hasattr(RB, "DUP_MIN_DISTANCE"):
+        RB.DUP_MIN_DISTANCE = _to_float("DUP_MIN_DISTANCE", getattr(RB, "DUP_MIN_DISTANCE", 50.0))
+    if hasattr(RB, "MOTION_MIN_CONTOUR_AREA"):
+        RB.MOTION_MIN_CONTOUR_AREA = _to_int("MOTION_MIN_CONTOUR_AREA", getattr(RB, "MOTION_MIN_CONTOUR_AREA", 400))
+    if hasattr(RB, "MOTION_DIFF_THRESHOLD"):
+        RB.MOTION_DIFF_THRESHOLD = _to_int("MOTION_DIFF_THRESHOLD", getattr(RB, "MOTION_DIFF_THRESHOLD", 50))
+    if hasattr(RB, "GAUSSIAN_BLUR_KERNEL"):
+        RB.GAUSSIAN_BLUR_KERNEL = _to_int("GAUSSIAN_BLUR_KERNEL", getattr(RB, "GAUSSIAN_BLUR_KERNEL", 9))
+    if hasattr(RB, "MOG2_KERNEL_SIZE"):
+        RB.MOG2_KERNEL_SIZE = _to_int("MOG2_KERNEL_SIZE", getattr(RB, "MOG2_KERNEL_SIZE", 7))
+    if hasattr(RB, "MOG2_HISTORY"):
+        RB.MOG2_HISTORY = _to_int("MOG2_HISTORY", getattr(RB, "MOG2_HISTORY", 1))
+    if hasattr(RB, "MOG2_VAR_THRESHOLD"):
+        RB.MOG2_VAR_THRESHOLD = _to_int("MOG2_VAR_THRESHOLD", getattr(RB, "MOG2_VAR_THRESHOLD", 50))
+
+
+def _print_active_params(method: str) -> None:
+    """Print a concise one-liner of active parameters for the given method."""
+    try:
+        parts: List[str] = []
+        # Always include confidence
+        parts.append(f"CONFIDENCE_THRESHOLD={getattr(RB, 'CONFIDENCE_THRESHOLD', '')}")
+        if method == "tiled":
+            parts.append(f"TILE_STRIDE={getattr(RB, 'TILE_STRIDE', '')}")
+            parts.append(f"DUP_MIN_DISTANCE={getattr(RB, 'DUP_MIN_DISTANCE', '')}")
+        if method in ("motion", "mog2"):
+            parts.append(f"DUP_MIN_DISTANCE={getattr(RB, 'DUP_MIN_DISTANCE', '')}")
+            parts.append(f"MOTION_MIN_CONTOUR_AREA={getattr(RB, 'MOTION_MIN_CONTOUR_AREA', '')}")
+            parts.append(f"MOTION_DIFF_THRESHOLD={getattr(RB, 'MOTION_DIFF_THRESHOLD', '')}")
+            if method == "motion":
+                parts.append(f"GAUSSIAN_BLUR_KERNEL={getattr(RB, 'GAUSSIAN_BLUR_KERNEL', '')}")
+        if method == "mog2":
+            parts.append(f"MOG2_KERNEL_SIZE={getattr(RB, 'MOG2_KERNEL_SIZE', '')}")
+            parts.append(f"MOG2_HISTORY={getattr(RB, 'MOG2_HISTORY', '')}")
+            parts.append(f"MOG2_VAR_THRESHOLD={getattr(RB, 'MOG2_VAR_THRESHOLD', '')}")
+        print(f"[PARAMS] {method}: " + ", ".join(parts))
+    except Exception:
+        pass
+
+
+def _load_previous_params(state_path: str) -> Dict[str, Any]:
+    try:
+        with open(state_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+
+def _methods_to_run(current: Dict[str, Any], previous: Dict[str, Any]) -> List[str]:
+    # Determine which methods should run based on parameter changes
+    mp = _method_param_map()
+    changed_keys = [k for k, v in current.items() if previous.get(k) != v]
+    methods = []
+    for method, keys in mp.items():
+        if any(k in changed_keys for k in keys):
+            methods.append(method)
+    # Always run at least one method if nothing has run before
+    if not previous:
+        methods = list(mp.keys())
+    return methods
+
+
+def main():
+    base_dir = os.path.dirname(__file__)
+    env_path = os.path.join(base_dir, "parameters.env")
+    env = _load_env_params(env_path)
+
+    # Initialize engine
+    model_path = env.get("MODEL_PATH", env.get("HEF_PATH", ""))
+    status = initialize(model_path=model_path)
+    eng = status.get("engine")
+    if eng is None:
+        raise RuntimeError("No inference engine available. Check MODEL_PATH and environment.")
+
+    input_src = env.get("INPUT_SRC", "")
+    gt_folder = env.get("GT_FOLDER", "")
+    output_root = env.get("OUTPUT_ROOT", os.path.join(base_dir, "benchmark_output"))
+    os.makedirs(output_root, exist_ok=True)
+
+    entries: List[Dict[str, Any]] = []
+
+    # Allow sweep flag via environment variable or parameters.env
+    sweep_flag = os.environ.get("SWEEP", env.get("SWEEP", "0"))
+    if sweep_flag == "1":
+        # Build sweep grid and create sweep-specific OUTPUT_ROOT
+        sweeps = _sweep_values()
+        keys = list(sweeps.keys())
+        grid = list(itertools.product(*[sweeps[k] for k in keys]))
+
+        base_output_root = output_root
+        # ISO 8601 DTG with milliseconds; sanitize ':' and '.' for Windows
+        sweep_dtg = datetime.now().isoformat(timespec="milliseconds").replace(":", "-").replace(".", "-")
+        sweep_output_root = os.path.join(base_output_root, f"{sweep_dtg}_sweep")
+        # Ensure uniqueness if created within the same millisecond
+        unique_root = sweep_output_root
+        suffix = 2
+        while os.path.exists(unique_root):
+            unique_root = f"{sweep_output_root}-{suffix}"
+            suffix += 1
+        sweep_output_root = unique_root
+        os.makedirs(sweep_output_root, exist_ok=True)
+
+        previous_decision: Dict[str, Any] = {}
+        print(f"[INFO] Sweep combinations: {len(grid)}")
+        print(f"[INFO] Sweep OUTPUT_ROOT: {sweep_output_root}")
+        # Prepare sweep-wide CSV path; append per method with per-iteration constants
+        csv_path = os.path.join(sweep_output_root, f"{sweep_dtg}_benchmark_runs.csv")
+        rows_written = 0
+
+        for i, combo in enumerate(grid, 1):
+                # Compose params for this combo
+                params = dict(env)
+                for k, v in zip(keys, combo):
+                    params[k] = str(v)
+                # Create per-iteration subfolder under the sweep root
+                iter_root = os.path.join(sweep_output_root, f"{i:04d}")
+                os.makedirs(iter_root, exist_ok=True)
+                # Do NOT override OUTPUT_ROOT in parameters.env; keep original.
+                # Write parameters.env for traceability, excluding OUTPUT_ROOT.
+                _write_env(params, env_path, exclude_keys=["OUTPUT_ROOT"])
+
+                # Determine methods to run vs previous combo
+                decision_params = dict(params)
+                decision_params.update({
+                    "MODEL_PATH": params.get("MODEL_PATH", params.get("HEF_PATH", "")),
+                    "INPUT_SRC": input_src,
+                    "GT_FOLDER": gt_folder,
+                    # Keep OUTPUT_ROOT constant for change detection; use sweep root
+                    "OUTPUT_ROOT": sweep_output_root,
+                })
+
+                # Apply current params to RB module so inference uses them now
+                _apply_params_to_RB(params)
+
+                to_run = _methods_to_run(decision_params, previous_decision)
+                print(f"[RUN {i}/{len(grid)}] methods: {to_run} params: {decision_params}")
+
+                # Run selected methods, directing outputs to iter_root, write immediately
+                constants_iter = _collect_constants_for_csv(params)
+                if "full" in to_run:
+                    _print_active_params("full")
+                    d = infer_full(eng, input_src, iter_root, gt_folder)
+                    ts = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+                    _append_metrics_csv(csv_path, constants_iter, [d], timestamp=ts, run_number=i)
+                    rows_written += 1
+                    entries.append(d)
+                if "full_pad" in to_run:
+                    _print_active_params("full_pad")
+                    d = infer_full_pad(eng, input_src, iter_root, gt_folder)
+                    ts = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+                    _append_metrics_csv(csv_path, constants_iter, [d], timestamp=ts, run_number=i)
+                    rows_written += 1
+                    entries.append(d)
+                if "tiled" in to_run:
+                    _print_active_params("tiled")
+                    d = infer_tiled(eng, input_src, iter_root, gt_folder)
+                    ts = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+                    _append_metrics_csv(csv_path, constants_iter, [d], timestamp=ts, run_number=i)
+                    rows_written += 1
+                    entries.append(d)
+                if "motion" in to_run:
+                    _print_active_params("motion")
+                    d = infer_motion(eng, input_src, iter_root, gt_folder)
+                    ts = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+                    _append_metrics_csv(csv_path, constants_iter, [d], timestamp=ts, run_number=i)
+                    rows_written += 1
+                    entries.append(d)
+                if "mog2" in to_run:
+                    _print_active_params("mog2")
+                    d = infer_motion_MOG2(eng, input_src, iter_root, gt_folder)
+                    ts = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+                    _append_metrics_csv(csv_path, constants_iter, [d], timestamp=ts, run_number=i)
+                    rows_written += 1
+                    entries.append(d)
+
+                previous_decision = decision_params
+
+                # Per-method writes handled above
+
+        # End of sweep summary only; no last_params.json
+
+        print(f"Wrote {rows_written} total sweep rows to: {csv_path}")
+    else:
+        # Decide which methods to run based on parameter changes
+        # Write outputs directly into OUTPUT_ROOT (no timestamp subfolder).
+        suite_root = output_root
+        # Use current DTG for CSV naming
+        suite_dtg = datetime.now().isoformat(timespec="milliseconds").replace(":", "-").replace(".", "-")
+        os.makedirs(suite_root, exist_ok=True)
+
+        previous = {}
+
+        decision_params = dict(env)
+        decision_params.update({
+            "MODEL_PATH": env.get("MODEL_PATH", env.get("HEF_PATH", "")),
+            "INPUT_SRC": input_src,
+            "GT_FOLDER": gt_folder,
+            "OUTPUT_ROOT": suite_root,
+        })
+
+        to_run = _methods_to_run(decision_params, previous)
+        # Prepare CSV path and constants; write per method immediately
+        csv_path = os.path.join(suite_root, f"{suite_dtg}_benchmark_runs.csv")
+        # Apply env params to RB for non-sweep runs as well
+        _apply_params_to_RB(env)
+        constants = _collect_constants_for_csv(env)
+        rows_written = 0
+
+        if "full" in to_run:
+            _print_active_params("full")
+            d = infer_full(eng, input_src, suite_root, gt_folder)
+            ts = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+            _append_metrics_csv(csv_path, constants, [d], timestamp=ts, run_number=1)
+            rows_written += 1
+            entries.append(d)
+        if "full_pad" in to_run:
+            _print_active_params("full_pad")
+            d = infer_full_pad(eng, input_src, suite_root, gt_folder)
+            ts = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+            _append_metrics_csv(csv_path, constants, [d], timestamp=ts, run_number=1)
+            rows_written += 1
+            entries.append(d)
+        if "tiled" in to_run:
+            _print_active_params("tiled")
+            d = infer_tiled(eng, input_src, suite_root, gt_folder)
+            ts = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+            _append_metrics_csv(csv_path, constants, [d], timestamp=ts, run_number=1)
+            rows_written += 1
+            entries.append(d)
+        if "motion" in to_run:
+            _print_active_params("motion")
+            d = infer_motion(eng, input_src, suite_root, gt_folder)
+            ts = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+            _append_metrics_csv(csv_path, constants, [d], timestamp=ts, run_number=1)
+            rows_written += 1
+            entries.append(d)
+        if "mog2" in to_run:
+            _print_active_params("mog2")
+            d = infer_motion_MOG2(eng, input_src, suite_root, gt_folder)
+            ts = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+            _append_metrics_csv(csv_path, constants, [d], timestamp=ts, run_number=1)
+            rows_written += 1
+            entries.append(d)
+
+        # No state file written in non-sweep
+
+        # Final summary
+        print(f"Wrote {rows_written} rows to: {csv_path}")
+
+
+# === Inlined inference methods from inference_methods.py ===
+def _run_with_monitor(run_fn, src: str, out_dir: str, eng) -> Tuple[float, float, float]:
+    """Run a method with Hailo monitor when available.
+
+    Returns (utilization, hailo_fps, proc_fps).
+    Falls back gracefully if monitor helpers are not present.
+    """
+    util = 0.0
+    hailo_fps = 0.0
+
+    # Create output dir
+    os.makedirs(out_dir, exist_ok=True)
+
+    # If the original helper exists, use it to capture Hailo metrics
+    if hasattr(RB, "start_hailo_monitor") and hasattr(RB, "stop_hailo_monitor") and hasattr(RB, "parse_hailo_monitor_file"):
+        monitor_log = os.path.join(out_dir, "hailo_monitor.txt")
+        proc = None
+        try:
+            proc = RB.start_hailo_monitor(monitor_log)
+        except Exception:
+            proc = None
+
+        try:
+            frames, elapsed = run_fn(src, out_dir, eng)
+        finally:
+            if proc is not None:
+                try:
+                    RB.stop_hailo_monitor(proc)
+                except Exception:
+                    pass
+
+        # Parse monitor output if available
+        try:
+            util, hailo_fps = RB.parse_hailo_monitor_file(monitor_log)
+        except Exception:
+            util, hailo_fps = 0.0, 0.0
+    else:
+        # No monitor helpers; just run
+        frames, elapsed = run_fn(src, out_dir, eng)
+
+    proc_fps = (frames / elapsed) if elapsed and elapsed > 0 else 0.0
+    # Do not overwrite hailo_fps; keep it zero if monitor is unavailable.
+    return util, hailo_fps, proc_fps
+
+
+def _compute_metrics_for_folder(out_dir: str, gt_folder: str) -> Tuple[int, int, int, int, float, float, float]:
+    """Compute TP/FP/FN/precision/recall/f1 for the given method outputs.
+
+    This uses the project's existing utilities if present; otherwise returns
+    zeros with files_counted indicating how many prediction files were found.
+    """
+    files_counted = 0
+    tp = fp = fn = 0
+    precision = recall = f1 = 0.0
+
+    # Try to use existing functions if available in Run_Benchmarks_Pad2
+    try:
+        if hasattr(RB, "compute_metrics"):
+            # RB.compute_metrics returns: tp, fp, fn, prec, rec, f1, shared(files_counted)
+            tp_v, fp_v, fn_v, prec_v, rec_v, f1_v, shared_v = RB.compute_metrics(out_dir, gt_folder)
+            return int(shared_v), int(tp_v), int(fp_v), int(fn_v), float(prec_v), float(rec_v), float(f1_v)
+    except Exception:
+        pass
+
+    # Minimal fallback: count txt files as files_counted; metrics zeroed
+    try:
+        files_counted = sum(1 for fn_ in os.listdir(out_dir) if fn_.lower().endswith(".txt"))
+    except Exception:
+        files_counted = 0
+    return files_counted, tp, fp, fn, precision, recall, f1
+
+
+def _make_entry(method: str, util: float, hailo_fps: float, proc_fps: float,
+                files_counted: int, tp: int, fp: int, fn: int,
+                precision: float, recall: float, f1: float) -> Dict[str, Any]:
+    return {
+        "method": method,
+        "files_counted": files_counted,
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "utilization": util,
+        "hailo_fps": hailo_fps,
+        "proc_fps": proc_fps,
+    }
+
+
+def infer_full(engine, input_src: str, output_root: str, gt_folder: str) -> Dict[str, Any]:
+    out_dir = os.path.join(output_root, "full")
+    util, hfps, pfps = _run_with_monitor(RB.infer_full, input_src, out_dir, engine)
+    files_counted, tp, fp, fn, prec, rec, f1 = _compute_metrics_for_folder(out_dir, gt_folder)
+    return _make_entry("full", util, hfps, pfps, files_counted, tp, fp, fn, prec, rec, f1)
+
+
+def infer_full_pad(engine, input_src: str, output_root: str, gt_folder: str) -> Dict[str, Any]:
+    out_dir = os.path.join(output_root, "pad")
+    util, hfps, pfps = _run_with_monitor(RB.infer_full_pad, input_src, out_dir, engine)
+    files_counted, tp, fp, fn, prec, rec, f1 = _compute_metrics_for_folder(out_dir, gt_folder)
+    return _make_entry("pad", util, hfps, pfps, files_counted, tp, fp, fn, prec, rec, f1)
+
+
+def infer_tiled(engine, input_src: str, output_root: str, gt_folder: str, stride: int = None) -> Dict[str, Any]:
+    out_dir = os.path.join(output_root, "tiled")
+    # If stride arg not provided, use default from RB
+    stride_val = stride if stride is not None else getattr(RB, "TILE_STRIDE", 320)
+    run_fn = lambda src, out, eng: RB.infer_tiled(src, out, eng, stride=stride_val)
+    util, hfps, pfps = _run_with_monitor(run_fn, input_src, out_dir, engine)
+    files_counted, tp, fp, fn, prec, rec, f1 = _compute_metrics_for_folder(out_dir, gt_folder)
+    return _make_entry("tiled", util, hfps, pfps, files_counted, tp, fp, fn, prec, rec, f1)
+
+
+def infer_motion(engine, input_src: str, output_root: str, gt_folder: str) -> Dict[str, Any]:
+    out_dir = os.path.join(output_root, "motion")
+    util, hfps, pfps = _run_with_monitor(RB.infer_motion, input_src, out_dir, engine)
+    files_counted, tp, fp, fn, prec, rec, f1 = _compute_metrics_for_folder(out_dir, gt_folder)
+    return _make_entry("mot", util, hfps, pfps, files_counted, tp, fp, fn, prec, rec, f1)
+
+
+def infer_motion_MOG2(engine, input_src: str, output_root: str, gt_folder: str) -> Dict[str, Any]:
+    out_dir = os.path.join(output_root, "motion_MOG2")
+    util, hfps, pfps = _run_with_monitor(RB.infer_motion_MOG2, input_src, out_dir, engine)
+    files_counted, tp, fp, fn, prec, rec, f1 = _compute_metrics_for_folder(out_dir, gt_folder)
+    return _make_entry("MOG2", util, hfps, pfps, files_counted, tp, fp, fn, prec, rec, f1)
+
+
+if __name__ == "__main__":
+    main()
