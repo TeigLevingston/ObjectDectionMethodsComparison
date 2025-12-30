@@ -6,9 +6,15 @@ Target distance dominated performance: far targets reduced F1 by ~0.45 compared 
 The takeaway: how you prepare images matters as much as the model itself, especially on constrained hardware.
 
 The environment should look like this,
+
 Project Root Directory
-  .venv
-  benchmark_output
-  images (This is the folder that the Create_GT_Helper script outputs to by default)
-  recordings
-  The ground truth folders, one for each video used for testing. Each folder contains the yolo text files, one for each frame in the video. Use the Create_GT_Helper script to create the first draft, then use YoloLabel to complete them.
+
+-  .venv
+  
+-  benchmark_output
+  
+-  images (This is the folder that the Create_GT_Helper script outputs to by default)
+  
+-  recordings
+  
+-  The ground truth folders, one for each video used for testing. Each folder contains the yolo text files, one for each frame in the video. Use the Create_GT_Helper script to create the first draft, then use YoloLabel to complete them.
