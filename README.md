@@ -18,3 +18,4 @@ Project Root Directory
 -  recordings
   
 -  The ground truth folders, one for each video used for testing. Each folder contains the yolo text files, one for each frame in the video. Use the Create_GT_Helper script to create the first draft, then use YoloLabel to complete them.
+<img width="1600" height="900" alt="image" src="https://github.com/user-attachments/assets/4815c3f8-1e99-4122-a604-756322409eda" />
