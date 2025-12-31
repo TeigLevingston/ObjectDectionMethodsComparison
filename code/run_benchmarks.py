@@ -1,5 +1,5 @@
 """
-Run Four slicing methods over a single input (local MPG/MP4 or RTSP URL),
+Run Five slicing methods over a single input (local MPG/MP4 or RTSP URL),
 collect detections with Hailo YOLO, measure device utilization and FPS via
 'hailortcli monitor', and compute Precision/Recall/F1 against a ground truth
 labels folder for each method.
