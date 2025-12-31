@@ -182,6 +182,7 @@ def prepare_inference_pad(crop: np.ndarray) -> Tuple[np.ndarray, Dict[str, Any]]
         'resized': bool(scaled or padded),
         'letterboxed': bool(padded),
     }
+  
     return prepared, pad_info
 
 
@@ -280,7 +281,7 @@ def merge_nearby_contours(
     """
     if not contours:
         return []
-
+    
     rects: List[Tuple[int, int, int, int]] = [cv2.boundingRect(c) for c in contours]
     n = len(rects)
     if n == 1:
@@ -299,9 +300,11 @@ def merge_nearby_contours(
                 adj[i].append(j)
                 adj[j].append(i)
 
-    # Connected components via BFS
+    # Connected components via Breadth-First Search
     seen = [False] * n
     merged: List[Tuple[int, int, int, int]] = []
+    #TODO switch to deque for performance? Sounds easy but this is working
+    #TODO consider Depth-First Search if performance is an issue
     for i in range(n):
         if seen[i]:
             continue
@@ -391,6 +394,10 @@ def infer_full_pad(src: str, out_dir: str, eng, conf_threshold: Optional[float] 
             frame_number = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
             base = os.path.join(out_dir, str(frame_number))
             frame_for_full, pad_info = prepare_inference_pad(frame)
+            kernel = np.array([[-1, -1, -1],
+                   [-1,  13, -1],
+                   [-1, -1, -1]])
+            frame_for_full = cv2.filter2D(frame_for_full, -1, kernel) 
             dets = run_inference(frame_for_full, conf_threshold=conf_threshold, engine=eng)
             lines: List[str] = []
             h_orig, w_orig = frame.shape[:2]
@@ -447,7 +454,7 @@ def infer_tiled(
                     original_tile = frame[y:ye, x:xe]
                     if original_tile is None or original_tile.size == 0:
                         continue
-                    inf_tile, pad_info = prepare_inference_crop(original_tile)
+                    inf_tile, pad_info = prepare_inference_pad(original_tile)
                     dets = run_inference(inf_tile, conf_threshold=conf_threshold, engine=eng)
                     for d in dets or []:
                         cid = d.get('class_id'); bbox = d.get('bbox')
@@ -532,7 +539,7 @@ def infer_motion(
             accepted: List[Tuple[int, float, float]] = []
             merged_rects = merge_nearby_contours(
                 contours=contours,
-                max_merge_distance= 50,#_env_get_float('DUP_MIN_DISTANCE', 50.0),
+                max_merge_distance= dup_min_distance,
                 iou_threshold=0.1,
                 min_group_area=motion_min_contour_area,
             )
@@ -551,7 +558,7 @@ def infer_motion(
                 original_crop = fr[y1:y2, x1:x2]
                 if original_crop is None or original_crop.size == 0:
                     continue
-                inf_crop, pad_info = prepare_inference_crop(original_crop)
+                inf_crop, pad_info = prepare_inference_pad(original_crop)
 
                 dets = run_inference(inf_crop, conf_threshold=conf_threshold, engine=eng)
                 frame_h, frame_w = frame2.shape[:2]
@@ -664,7 +671,7 @@ def infer_motion_MOG2(
                 original_crop = fr[y1:y2, x1:x2]
                 if original_crop is None or original_crop.size == 0:
                     continue
-                inf_crop, pad_info = prepare_inference_crop(original_crop)
+                inf_crop, pad_info = prepare_inference_pad(original_crop)
 
                 dets = run_inference(inf_crop, conf_threshold=conf_threshold, engine=eng)
                 for d in dets or []:
