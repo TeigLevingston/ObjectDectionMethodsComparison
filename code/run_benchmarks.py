@@ -1,8 +1,8 @@
 """
-Run Five slicing methods over a single input (local MPG/MP4 or RTSP URL),
-collect detections with YOLO, measure device utilization and FPS via
-'hailortcli monitor' (if running in Hailo environment), and compute Precision/Recall/F1 against a ground truth
-
+Run Four slicing methods over a single input (local MPG/MP4 or RTSP URL),
+collect detections with Hailo YOLO, measure device utilization and FPS via
+'hailortcli monitor', and compute Precision/Recall/F1 against a ground truth
+labels folder for each method.
 
 Methods:
 - full: resize whole frame to 640x640 and infer
@@ -16,7 +16,7 @@ Outputs (in output_root):
 - pad/ *.txt 
 - tiled/ *.txt  
 - motion/ *.txt 
-- MOG2/ *.txt 
+- motion_MOG2/ *.txt 
 - metrics summary printed to console
 - metrics summary saved to text file in root output folder
 """
@@ -79,9 +79,9 @@ def _load_env_params(env_path: str) -> dict:
 
 _ENV = _load_env_params(os.path.join(os.path.dirname(__file__), 'parameters.env'))
 MODEL_PATH: str = _ENV.get('MODEL_PATH', _ENV.get('HEF_PATH', "yolo11m.pt"))
-INPUT_SRC: str = _ENV.get('INPUT_SRC', "your path here")
-GT_FOLDER: str = _ENV.get('GT_FOLDER', "your path here")
-OUTPUT_ROOT: str = _ENV.get('OUTPUT_ROOT', "your path here")
+INPUT_SRC: str = _ENV.get('INPUT_SRC', "C:\\Users\\teig\\Documents\\Motion_Detection_Project\\Hailo-CUDA_Project\\recordings\\day2.mp4")
+GT_FOLDER: str = _ENV.get('GT_FOLDER', "C:\\Users\\teig\\Documents\\Motion_Detection_Project\\Hailo-CUDA_Project\\groundtruth")
+OUTPUT_ROOT: str = _ENV.get('OUTPUT_ROOT', "C:\\Users\\teig\\Documents\\Motion_Detection_Project\\Hailo-CUDA_Project\\benchmark_output")
 DEFAULT_INFERENCE_SIZE: Tuple[int, int] = (
     int(_ENV.get('DEFAULT_INFERENCE_WIDTH', '640')),
     int(_ENV.get('DEFAULT_INFERENCE_HEIGHT', '640'))
@@ -93,8 +93,8 @@ MOTION_MIN_CONTOUR_AREA: int = int(_ENV.get('MOTION_MIN_CONTOUR_AREA', '500'))
 MOTION_DIFF_THRESHOLD: int = int(_ENV.get('MOTION_DIFF_THRESHOLD', '50'))
 GAUSSIAN_BLUR_KERNEL: int = int(_ENV.get('GAUSSIAN_BLUR_KERNEL', '21'))
 MOG2_KERNEL_SIZE: int = int(_ENV.get('MOG2_KERNEL_SIZE', '7'))
-MOG2_HISTORY: int = int(_ENV.get('MOG2_HISTORY', '10'))
-MOG2_VAR_THRESHOLD: int = int(_ENV.get('MOG2_VAR_THRESHOLD', _ENV.get('MOTION_DIFF_THRESHOLD', '5000')))
+MOG2_HISTORY: int = int(_ENV.get('MOG2_HISTORY', '1'))
+MOG2_VAR_THRESHOLD: int = int(_ENV.get('MOG2_VAR_THRESHOLD', _ENV.get('MOTION_DIFF_THRESHOLD', '50')))
 
 # Hailo monitor header signature from HailoRTCLI output
 MONITOR_HEADER: str = (
@@ -162,9 +162,10 @@ def infer_full(src: str, out_dir: str, eng: HailoInferenceEngine):
 def infer_full_pad(src: str, out_dir: str, eng: HailoInferenceEngine):
     return infer_utils.infer_full_pad(src, out_dir, eng)
 
-def infer_tiled(src: str, out_dir: str, eng: HailoInferenceEngine, stride: int = TILE_STRIDE):
-    # Pass stride override; other params default via env
-    return infer_utils.infer_tiled(src, out_dir, eng, stride)
+
+def infer_tiled(src: str, out_dir: str, eng: HailoInferenceEngine):
+    # All parameters default from env in infer_utils
+    return infer_utils.infer_tiled(src, out_dir, eng)
 
 def infer_motion(src: str, out_dir: str, eng: HailoInferenceEngine):
     # All parameters default from env in infer_utils
@@ -314,7 +315,7 @@ def save_metrics_report(out_root: str, entries: List[Dict[str, Any]], model_name
                 f.write(
                     f"{e['name']}\t{e['shared']}\t{e['tp']}\t{e['fp']}\t{e['fn']}\t"
                     f"{e['precision']:.4f}\t{e['recall']:.4f}\t{e['f1']:.4f}\t"
-                    f"{e['utilization']:.2f}\t{e['hailo_fps']:.2f}\t\t{e['proc_fps']:.2f}\n"
+                    f"{e['utilization']:.2f}\t{e['hailo_fps']:.2f}\t{e['proc_fps']:.2f}\n"
                 )
     except Exception as exc:
         print(f"Failed to write metrics summary file: {exc}")
@@ -446,7 +447,7 @@ def main() -> int:
     util_full_pad, hailo_full_pad_fps, proc_full_pad_fps = run_with_monitor(infer_full_pad, INPUT_SRC, out_full_pad, eng)
 
     print("Running tiled method...")
-    util_tiled, hailo_tiled_fps, proc_tiled_fps = run_with_monitor(lambda s, d, e: infer_tiled(s, d, e, stride=320), INPUT_SRC, out_tiled, eng)
+    util_tiled, hailo_tiled_fps, proc_tiled_fps = run_with_monitor(infer_tiled, INPUT_SRC, out_tiled, eng)
 
     # Compute metrics against ground truth
     print("\nMetrics vs ground truth (instance counts per class):")
@@ -498,7 +499,6 @@ def main() -> int:
 
     return 0
 
-# Using remap_bbox_from_detection_space from infer_utils
 
 if __name__ == "__main__":
     try:
