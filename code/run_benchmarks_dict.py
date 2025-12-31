@@ -9,7 +9,7 @@ Methods:
 - pad: resize whole frame to fit within 640x640 with aspect ratio preserved and letterbox padding
 - tiled: tile frame into 640x640 windows with stride (default 320x320)
 - motion: motion-based 640x640 crops using frame differencing
-- motion_MOG2: motion-based 640x640 crops using MOG2 background subtraction
+- MOG2: motion-based 640x640 crops using MOG2 background subtraction
 
 Outputs (in output_root):
 - full/ *.txt  
@@ -81,9 +81,9 @@ def _load_env_params(env_path: str) -> dict:
 
 _ENV = _load_env_params(os.path.join(os.path.dirname(__file__), 'parameters.env'))
 MODEL_PATH: str = _ENV.get('MODEL_PATH', _ENV.get('HEF_PATH', "yolo11m.pt"))
-INPUT_SRC: str = _ENV.get('INPUT_SRC', "your path here")
-GT_FOLDER: str = _ENV.get('GT_FOLDER', "your path here")
-OUTPUT_ROOT: str = _ENV.get('OUTPUT_ROOT', "your path here")
+INPUT_SRC: str = _ENV.get('INPUT_SRC', "C:\\Users\\teig\\Documents\\Motion_Detection_Project\\Hailo-CUDA_Project\\recordings\\day2.mp4")
+GT_FOLDER: str = _ENV.get('GT_FOLDER', "C:\\Users\\teig\\Documents\\Motion_Detection_Project\\Hailo-CUDA_Project\\groundtruth")
+OUTPUT_ROOT: str = _ENV.get('OUTPUT_ROOT', "C:\\Users\\teig\\Documents\\Motion_Detection_Project\\Hailo-CUDA_Project\\benchmark_output")
 DEFAULT_INFERENCE_SIZE: Tuple[int, int] = (
     int(_ENV.get('DEFAULT_INFERENCE_WIDTH', '640')),
     int(_ENV.get('DEFAULT_INFERENCE_HEIGHT', '640'))
@@ -167,6 +167,7 @@ _DET_STORE: Dict[str, Dict[str, List[str]]] = {}
 _DET_COUNT: Dict[str, int] = {}
 
 
+
 # -------------------------- Hailo monitor Setup --------------------------
 
 def start_hailo_monitor(log_path: str) -> subprocess.Popen:
@@ -225,9 +226,9 @@ def infer_full_pad(src: str, out_dir: str, eng: HailoInferenceEngine):
     return infer_utils.infer_full_pad(src, out_dir, eng)
 
 
-def infer_tiled(src: str, out_dir: str, eng: HailoInferenceEngine, stride: int = TILE_STRIDE):
-    # Provide stride override; other params default in infer_utils
-    return infer_utils.infer_tiled(src, out_dir, eng, stride)
+def infer_tiled(src: str, out_dir: str, eng: HailoInferenceEngine):
+
+    return infer_utils.infer_tiled(src, out_dir, eng)
 
 def infer_motion(src: str, out_dir: str, eng: HailoInferenceEngine):
     return infer_utils.infer_motion(src, out_dir, eng)
@@ -551,7 +552,7 @@ def main() -> int:
     util_full_pad, hailo_full_pad_fps, proc_full_pad_fps = run_with_monitor(infer_full_pad, INPUT_SRC, out_full_pad, eng)
 
     print("Running tiled method...")
-    util_tiled, hailo_tiled_fps, proc_tiled_fps = run_with_monitor(lambda s, d, e: infer_tiled(s, d, e, stride=320), INPUT_SRC, out_tiled, eng)
+    util_tiled, hailo_tiled_fps, proc_tiled_fps = run_with_monitor(infer_tiled, INPUT_SRC, out_tiled, eng)
 
     # Compute metrics against ground truth
     print("\nMetrics vs ground truth (instance counts per class):")
@@ -603,6 +604,7 @@ def main() -> int:
 
     return 0
 
+# Using remap_bbox_from_detection_space from infer_utils
 
 if __name__ == "__main__":
     try:
